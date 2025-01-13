@@ -19,8 +19,10 @@ package manifest
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -84,20 +86,23 @@ func (f *YamlManifest) Apply(spec *unstructured.Unstructured) error {
 	if err != nil {
 		return err
 	}
+	gvr, _ := meta.UnsafeGuessKindToResource(spec.GroupVersionKind())
 	if current == nil {
 		f.log.Info("Creating type ", spec.GroupVersionKind(), " name ", spec.GetName())
-		gvr, _ := meta.UnsafeGuessKindToResource(spec.GroupVersionKind())
 		if _, err := f.client.Resource(gvr).Namespace(spec.GetNamespace()).Create(context.Background(), spec, v1.CreateOptions{}); err != nil {
-			return err
+			// We might be applying the same resource in parallel, in that case, update the resource.
+			if errors.IsAlreadyExists(err) {
+				return f.Apply(spec)
+			}
+			return fmt.Errorf("failed to create resource %v - Resource:\n%s", err, toYaml(spec))
 		}
 	} else {
 		// Update existing one
 		if UpdateChanged(spec.UnstructuredContent(), current.UnstructuredContent()) {
 			f.log.Info("Updating type ", spec.GroupVersionKind(), " name ", spec.GetName())
 
-			gvr, _ := meta.UnsafeGuessKindToResource(spec.GroupVersionKind())
 			if _, err = f.client.Resource(gvr).Namespace(current.GetNamespace()).Update(context.Background(), current, v1.UpdateOptions{}); err != nil {
-				return err
+				return fmt.Errorf("failed to update resource %v - Resource:\n%s", err, toYaml(spec))
 			}
 		}
 	}
@@ -212,4 +217,17 @@ func UpdateChanged(src, tgt map[string]interface{}) bool {
 		}
 	}
 	return changed
+}
+
+func toYaml(spec *unstructured.Unstructured) string {
+	s := strings.Builder{}
+	enc := yaml.NewEncoder(&s)
+	enc.SetIndent(2)
+
+	if err := enc.Encode(spec.Object); err != nil {
+		return err.Error()
+	}
+	_ = enc.Close()
+
+	return s.String()
 }

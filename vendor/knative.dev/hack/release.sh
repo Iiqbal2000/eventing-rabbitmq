@@ -17,7 +17,7 @@
 # This is a helper script for Knative release scripts.
 # See README.md for instructions on how to use it.
 
-source $(dirname "${BASH_SOURCE[0]}")/library.sh
+source "$(dirname "${BASH_SOURCE[0]}")/library.sh"
 
 # Organization name in GitHub; defaults to Knative.
 readonly ORG_NAME="${ORG_NAME:-knative}"
@@ -33,34 +33,10 @@ readonly RELEASE_GCR="gcr.io/knative-releases/github.com/${ORG_NAME}/${REPO_NAME
 readonly NIGHTLY_SIGNING_IDENTITY="signer@knative-nightly.iam.gserviceaccount.com"
 readonly RELEASE_SIGNING_IDENTITY="signer@knative-releases.iam.gserviceaccount.com"
 
-# Georeplicate images to {us,eu,asia}.gcr.io
-readonly GEO_REPLICATION=(us eu asia)
-
 # Simple banner for logging purposes.
-# Parameters: $1 - message to display.
+# Parameters: $* - message to display.
 function banner() {
-    make_banner "@" "$1"
-}
-
-# Tag images in the yaml files if $TAG is not empty.
-# $KO_DOCKER_REPO is the registry containing the images to tag with $TAG.
-# Parameters: $1..$n - files to parse for images (non .yaml files are ignored).
-function tag_images_in_yamls() {
-  [[ -z ${TAG} ]] && return 0
-  local SRC_DIR="${GOPATH}/src/"
-  local DOCKER_BASE="${KO_DOCKER_REPO}/${REPO_ROOT_DIR/$SRC_DIR}"
-  local GEO_REGIONS="${GEO_REPLICATION[@]} "
-  echo "Tagging any images under '${DOCKER_BASE}' with ${TAG}"
-  # shellcheck disable=SC2068
-  for file in $@; do
-    [[ "${file##*.}" != "yaml" ]] && continue
-    echo "Inspecting ${file}"
-    for image in $(grep -o "${DOCKER_BASE}/[a-z\./-]\+@sha256:[0-9a-f]\+" "${file}"); do
-      for region in "" ${GEO_REGIONS// /. }; do
-        gcloud -q container images add-tag "${image}" "${region}${image%%@*}:${TAG}"
-      done
-    done
-  done
+  subheader "$*"
 }
 
 # Copy the given files to the $RELEASE_GCS_BUCKET bucket's "latest" directory.
@@ -99,7 +75,7 @@ RELEASE_NOTES=""
 RELEASE_BRANCH=""
 RELEASE_GCS_BUCKET="knative-nightly/${REPO_NAME}"
 RELEASE_DIR=""
-KO_FLAGS="-P --platform=all"
+export KO_FLAGS="-P --platform=all"
 VALIDATION_TESTS="./test/presubmit-tests.sh"
 ARTIFACTS_TO_PUBLISH=""
 FROM_NIGHTLY_RELEASE=""
@@ -646,13 +622,37 @@ function run_validation_tests() {
 # Parameters: $1..$n - files to add to the release.
 function publish_artifacts() {
   (( ! PUBLISH_RELEASE )) && return
-  tag_images_in_yamls "${ARTIFACTS_TO_PUBLISH}"
   if [[ -n "${RELEASE_DIR}" ]]; then
     cp "${ARTIFACTS_TO_PUBLISH}" "${RELEASE_DIR}" || abort "cannot copy release to '${RELEASE_DIR}'"
   fi
   [[ -n "${RELEASE_GCS_BUCKET}" ]] && publish_to_gcs "${ARTIFACTS_TO_PUBLISH}"
   publish_to_github "${ARTIFACTS_TO_PUBLISH}"
+  set_latest_to_highest_semver
   banner "New release published successfully"
+}
+
+# Sets the github release with the highest semver to 'latest'
+function set_latest_to_highest_semver() {
+  if ! (( PUBLISH_TO_GITHUB )); then
+    return 0
+  fi
+  echo "Setting latest release to highest semver"
+  
+  local last_version release_id  # don't combine with assignment else $? will be 0
+
+  last_version="$(hub_tool -p release | cut -d'-' -f2 | grep '^v[0-9]\+\.[0-9]\+\.[0-9]\+$'| sort -r -V | head -1)"
+  if ! [[ $? -eq 0 ]]; then
+    abort "cannot list releases"
+  fi
+  
+  release_id="$(hub_tool api "/repos/${ORG_NAME}/${REPO_NAME}/releases/tags/knative-${last_version}" | jq .id)"
+  if [[ $? -ne 0 ]]; then
+    abort "cannot get relase id from github"
+  fi
+  
+  hub_tool api --method PATCH "/repos/${ORG_NAME}/${REPO_NAME}/releases/$release_id" \
+    -F make_latest=true > /dev/null || abort "error setting $last_version to 'latest'"
+  echo "Github release ${last_version} set as 'latest'"
 }
 
 # Entry point for a release script.
@@ -681,6 +681,8 @@ function main() {
   function_exists build_release || abort "function 'build_release()' not defined"
   [[ -x ${VALIDATION_TESTS} ]] || abort "test script '${VALIDATION_TESTS}' doesn't exist"
 
+  banner "Environment variables"
+  env
   # Log what will be done and where.
   banner "Release configuration"
   if which gcloud &>/dev/null ; then
@@ -692,6 +694,8 @@ function main() {
   (( SKIP_TESTS )) && echo "- Tests will NOT be run" || echo "- Tests will be run"
   if (( TAG_RELEASE )); then
     echo "- Artifacts will be tagged '${TAG}'"
+    # We want to add git tags to the container images built by ko
+    KO_FLAGS+=" --tags=latest,${TAG}"
   else
     echo "- Artifacts WILL NOT be tagged"
   fi

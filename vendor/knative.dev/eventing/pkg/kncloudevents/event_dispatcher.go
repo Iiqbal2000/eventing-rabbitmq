@@ -28,10 +28,12 @@ import (
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	"github.com/cloudevents/sdk-go/v2/binding"
+	"github.com/cloudevents/sdk-go/v2/binding/buffering"
 	"github.com/cloudevents/sdk-go/v2/event"
 	cehttp "github.com/cloudevents/sdk-go/v2/protocol/http"
 	"github.com/hashicorp/go-retryablehttp"
 	"go.opencensus.io/trace"
+	"k8s.io/apimachinery/pkg/types"
 
 	"knative.dev/pkg/apis"
 	duckv1 "knative.dev/pkg/apis/duck/v1"
@@ -39,6 +41,10 @@ import (
 	"knative.dev/pkg/system"
 
 	eventingapis "knative.dev/eventing/pkg/apis"
+	v1 "knative.dev/eventing/pkg/apis/duck/v1"
+	"knative.dev/eventing/pkg/auth"
+	"knative.dev/eventing/pkg/eventingtls"
+	"knative.dev/eventing/pkg/eventtype"
 	"knative.dev/eventing/pkg/utils"
 
 	"knative.dev/eventing/pkg/broker"
@@ -57,9 +63,17 @@ type DispatchInfo struct {
 	ResponseCode   int
 	ResponseHeader http.Header
 	ResponseBody   []byte
+	Scheme         string
 }
 
 type SendOption func(*senderConfig) error
+
+func WithEventFormat(format *v1.FormatType) SendOption {
+	return func(sc *senderConfig) error {
+		sc.eventFormat = format
+		return nil
+	}
+}
 
 func WithReply(reply *duckv1.Addressable) SendOption {
 	return func(sc *senderConfig) error {
@@ -101,28 +115,69 @@ func WithTransformers(transformers ...binding.Transformer) SendOption {
 	}
 }
 
+func WithOIDCAuthentication(serviceAccount *types.NamespacedName) SendOption {
+	return func(sc *senderConfig) error {
+		if serviceAccount != nil && serviceAccount.Name != "" && serviceAccount.Namespace != "" {
+			sc.oidcServiceAccount = serviceAccount
+			return nil
+		} else {
+			return fmt.Errorf("service account name and namespace for OIDC authentication must not be empty")
+		}
+	}
+}
+
+func WithEventTypeAutoHandler(handler *eventtype.EventTypeAutoHandler, ref *duckv1.KReference, ownerUID types.UID) SendOption {
+	return func(sc *senderConfig) error {
+		if handler != nil && (ref == nil || ownerUID == types.UID("")) {
+			return fmt.Errorf("addressable and ownerUID must be provided if using the eventtype auto handler")
+		}
+		sc.eventTypeAutoHandler = handler
+		sc.eventTypeRef = ref
+		sc.eventTypeOnwerUID = ownerUID
+
+		return nil
+	}
+}
+
 type senderConfig struct {
-	reply             *duckv1.Addressable
-	deadLetterSink    *duckv1.Addressable
-	additionalHeaders http.Header
-	retryConfig       *RetryConfig
-	transformers      binding.Transformers
+	reply                *duckv1.Addressable
+	deadLetterSink       *duckv1.Addressable
+	additionalHeaders    http.Header
+	retryConfig          *RetryConfig
+	transformers         binding.Transformers
+	oidcServiceAccount   *types.NamespacedName
+	eventTypeAutoHandler *eventtype.EventTypeAutoHandler
+	eventTypeRef         *duckv1.KReference
+	eventTypeOnwerUID    types.UID
+	eventFormat          *v1.FormatType
+}
+
+type Dispatcher struct {
+	oidcTokenProvider *auth.OIDCTokenProvider
+	clientConfig      eventingtls.ClientConfig
+}
+
+func NewDispatcher(clientConfig eventingtls.ClientConfig, oidcTokenProvider *auth.OIDCTokenProvider) *Dispatcher {
+	return &Dispatcher{
+		clientConfig:      clientConfig,
+		oidcTokenProvider: oidcTokenProvider,
+	}
 }
 
 // SendEvent sends the given event to the given destination.
-func SendEvent(ctx context.Context, event event.Event, destination duckv1.Addressable, options ...SendOption) (*DispatchInfo, error) {
+func (d *Dispatcher) SendEvent(ctx context.Context, event event.Event, destination duckv1.Addressable, options ...SendOption) (*DispatchInfo, error) {
 	// clone the event since:
 	// - we mutate the event and the callers might not expect this
 	// - it might produce data races if the caller is trying to read the event in different go routines
 	c := event.Clone()
 	message := binding.ToMessage(&c)
 
-	return SendMessage(ctx, message, destination, options...)
+	return d.SendMessage(ctx, message, destination, options...)
 }
 
 // SendMessage sends the given message to the given destination.
 // SendMessage is kept for compatibility and SendEvent should be used whenever possible.
-func SendMessage(ctx context.Context, message binding.Message, destination duckv1.Addressable, options ...SendOption) (*DispatchInfo, error) {
+func (d *Dispatcher) SendMessage(ctx context.Context, message binding.Message, destination duckv1.Addressable, options ...SendOption) (*DispatchInfo, error) {
 	config := &senderConfig{
 		additionalHeaders: make(http.Header),
 	}
@@ -134,10 +189,10 @@ func SendMessage(ctx context.Context, message binding.Message, destination duckv
 		}
 	}
 
-	return send(ctx, message, destination, config)
+	return d.send(ctx, message, destination, config)
 }
 
-func send(ctx context.Context, message binding.Message, destination duckv1.Addressable, config *senderConfig) (*DispatchInfo, error) {
+func (d *Dispatcher) send(ctx context.Context, message binding.Message, destination duckv1.Addressable, config *senderConfig) (*DispatchInfo, error) {
 	dispatchExecutionInfo := &DispatchInfo{}
 
 	// All messages that should be finished at the end of this function
@@ -167,12 +222,22 @@ func send(ctx context.Context, message binding.Message, destination duckv1.Addre
 	}
 	additionalHeadersForDestination.Set("Prefer", "reply")
 
-	ctx, responseMessage, dispatchExecutionInfo, err := executeRequest(ctx, destination, message, additionalHeadersForDestination, config.retryConfig, config.transformers)
+	// Handle the event format option
+	if config.eventFormat != nil {
+		switch *config.eventFormat {
+		case v1.DeliveryFormatBinary:
+			ctx = binding.WithForceBinary(ctx)
+		case v1.DeliveryFormatJson:
+			ctx = binding.WithForceStructured(ctx)
+		}
+	}
+
+	ctx, responseMessage, dispatchExecutionInfo, err := d.executeRequest(ctx, destination, message, additionalHeadersForDestination, config.retryConfig, config.oidcServiceAccount, config.transformers)
 	if err != nil {
 		// If DeadLetter is configured, then send original message with knative error extensions
 		if config.deadLetterSink != nil {
 			dispatchTransformers := dispatchExecutionInfoTransformers(destination.URL, dispatchExecutionInfo)
-			_, deadLetterResponse, dispatchExecutionInfo, deadLetterErr := executeRequest(ctx, *config.deadLetterSink, message, config.additionalHeaders, config.retryConfig, append(config.transformers, dispatchTransformers))
+			_, deadLetterResponse, dispatchExecutionInfo, deadLetterErr := d.executeRequest(ctx, *config.deadLetterSink, message, config.additionalHeaders, config.retryConfig, config.oidcServiceAccount, append(config.transformers, dispatchTransformers))
 			if deadLetterErr != nil {
 				return dispatchExecutionInfo, fmt.Errorf("unable to complete request to either %s (%v) or %s (%v)", destination.URL, err, config.deadLetterSink.URL, deadLetterErr)
 			}
@@ -202,18 +267,25 @@ func send(ctx context.Context, message binding.Message, destination duckv1.Addre
 
 	messagesToFinish = append(messagesToFinish, responseMessage)
 
+	if config.eventTypeAutoHandler != nil {
+		// messages can only be read once, so we need to make a copy of it
+		responseMessage, err = buffering.CopyMessage(ctx, responseMessage)
+		if err == nil {
+			d.handleAutocreate(ctx, responseMessage, config)
+		}
+	}
+
 	if config.reply == nil {
 		return dispatchExecutionInfo, nil
 	}
 
 	// send reply
-
-	ctx, responseResponseMessage, dispatchExecutionInfo, err := executeRequest(ctx, *config.reply, responseMessage, responseAdditionalHeaders, config.retryConfig, config.transformers)
+	ctx, responseResponseMessage, dispatchExecutionInfo, err := d.executeRequest(ctx, *config.reply, responseMessage, responseAdditionalHeaders, config.retryConfig, config.oidcServiceAccount, config.transformers)
 	if err != nil {
 		// If DeadLetter is configured, then send original message with knative error extensions
 		if config.deadLetterSink != nil {
 			dispatchTransformers := dispatchExecutionInfoTransformers(config.reply.URL, dispatchExecutionInfo)
-			_, deadLetterResponse, dispatchExecutionInfo, deadLetterErr := executeRequest(ctx, *config.deadLetterSink, message, responseAdditionalHeaders, config.retryConfig, append(config.transformers, dispatchTransformers))
+			_, deadLetterResponse, dispatchExecutionInfo, deadLetterErr := d.executeRequest(ctx, *config.deadLetterSink, message, responseAdditionalHeaders, config.retryConfig, config.oidcServiceAccount, append(config.transformers, dispatchTransformers))
 			if deadLetterErr != nil {
 				return dispatchExecutionInfo, fmt.Errorf("failed to forward reply to %s (%v) and failed to send it to the dead letter sink %s (%v)", config.reply.URL, err, config.deadLetterSink.URL, deadLetterErr)
 			}
@@ -233,11 +305,19 @@ func send(ctx context.Context, message binding.Message, destination duckv1.Addre
 	return dispatchExecutionInfo, nil
 }
 
-func executeRequest(ctx context.Context, target duckv1.Addressable, message cloudevents.Message, additionalHeaders http.Header, retryConfig *RetryConfig, transformers ...binding.Transformer) (context.Context, cloudevents.Message, *DispatchInfo, error) {
+func (d *Dispatcher) executeRequest(ctx context.Context, target duckv1.Addressable, message cloudevents.Message, additionalHeaders http.Header, retryConfig *RetryConfig, oidcServiceAccount *types.NamespacedName, transformers ...binding.Transformer) (context.Context, cloudevents.Message, *DispatchInfo, error) {
+	var scheme string
+	if target.URL != nil {
+		scheme = target.URL.Scheme
+	} else {
+		// assume that the scheme is http by default
+		scheme = "http"
+	}
 	dispatchInfo := DispatchInfo{
 		Duration:       NoDuration,
 		ResponseCode:   NoResponse,
 		ResponseHeader: make(http.Header),
+		Scheme:         scheme,
 	}
 
 	ctx, span := trace.StartSpan(ctx, "knative.dev", trace.WithSpanKind(trace.SpanKindClient))
@@ -247,12 +327,12 @@ func executeRequest(ctx context.Context, target duckv1.Addressable, message clou
 		transformers = append(transformers, tracing.PopulateSpan(span, target.URL.String()))
 	}
 
-	req, err := createRequest(ctx, message, target, additionalHeaders, transformers...)
+	req, err := d.createRequest(ctx, message, target, additionalHeaders, oidcServiceAccount, transformers...)
 	if err != nil {
 		return ctx, nil, &dispatchInfo, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	client, err := newClient(target)
+	client, err := newClient(d.clientConfig, target)
 	if err != nil {
 		return ctx, nil, &dispatchInfo, fmt.Errorf("failed to create http client: %w", err)
 	}
@@ -271,11 +351,11 @@ func executeRequest(ctx context.Context, target duckv1.Addressable, message clou
 	dispatchInfo.ResponseHeader = response.Header
 
 	body := new(bytes.Buffer)
-	_, readErr := body.ReadFrom(response.Body)
+	_, err = body.ReadFrom(response.Body)
 
 	if isFailure(response.StatusCode) {
 		// Read response body into dispatchInfo for failures
-		if readErr != nil && readErr != io.EOF {
+		if err != nil && err != io.EOF {
 			dispatchInfo.ResponseBody = []byte(fmt.Sprintf("dispatch resulted in status \"%s\". Could not read response body: error: %s", response.Status, err.Error()))
 		} else {
 			dispatchInfo.ResponseBody = body.Bytes()
@@ -287,8 +367,9 @@ func executeRequest(ctx context.Context, target duckv1.Addressable, message clou
 	}
 
 	var responseMessageBody []byte
-	if readErr != nil && readErr != io.EOF {
+	if err != nil && err != io.EOF {
 		responseMessageBody = []byte(fmt.Sprintf("Failed to read response body: %s", err.Error()))
+		dispatchInfo.ResponseCode = http.StatusInternalServerError
 	} else {
 		responseMessageBody = body.Bytes()
 		dispatchInfo.ResponseBody = responseMessageBody
@@ -305,7 +386,16 @@ func executeRequest(ctx context.Context, target duckv1.Addressable, message clou
 	return ctx, responseMessage, &dispatchInfo, nil
 }
 
-func createRequest(ctx context.Context, message binding.Message, target duckv1.Addressable, additionalHeaders http.Header, transformers ...binding.Transformer) (*http.Request, error) {
+func (d *Dispatcher) handleAutocreate(ctx context.Context, msg binding.Message, config *senderConfig) {
+	responseEvent, err := binding.ToEvent(ctx, msg)
+	if err != nil {
+		return
+	}
+
+	config.eventTypeAutoHandler.AutoCreateEventType(ctx, responseEvent, config.eventTypeRef, config.eventTypeOnwerUID)
+}
+
+func (d *Dispatcher) createRequest(ctx context.Context, message binding.Message, target duckv1.Addressable, additionalHeaders http.Header, oidcServiceAccount *types.NamespacedName, transformers ...binding.Transformer) (*http.Request, error) {
 	request, err := http.NewRequestWithContext(ctx, "POST", target.URL.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not create http request: %w", err)
@@ -319,6 +409,16 @@ func createRequest(ctx context.Context, message binding.Message, target duckv1.A
 		request.Header[key] = val
 	}
 
+	if oidcServiceAccount != nil {
+		if target.Audience != nil && *target.Audience != "" {
+			jwt, err := d.oidcTokenProvider.GetJWT(*oidcServiceAccount, *target.Audience)
+			if err != nil {
+				return nil, fmt.Errorf("could not get JWT: %w", err)
+			}
+			request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", jwt))
+		}
+	}
+
 	return request, nil
 }
 
@@ -327,8 +427,8 @@ type client struct {
 	http.Client
 }
 
-func newClient(target duckv1.Addressable) (*client, error) {
-	c, err := getClientForAddressable(target)
+func newClient(cfg eventingtls.ClientConfig, target duckv1.Addressable) (*client, error) {
+	c, err := getClientForAddressable(cfg, target)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get http client for addressable: %w", err)
 	}

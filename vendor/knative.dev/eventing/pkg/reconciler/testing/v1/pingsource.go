@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,7 +18,10 @@ package testing
 
 import (
 	"context"
+	"fmt"
 	"time"
+
+	"knative.dev/eventing/pkg/apis/feature"
 
 	"knative.dev/eventing/pkg/reconciler/testing"
 
@@ -106,4 +109,32 @@ func WithPingSourceFinalizers(finalizers ...string) PingSourceOption {
 func WithPingSourceDeleted(c *v1.PingSource) {
 	t := metav1.NewTime(time.Unix(1e9, 0))
 	c.SetDeletionTimestamp(&t)
+}
+
+func WithPingSourceOIDCIdentityCreatedSucceeded() PingSourceOption {
+	return func(c *v1.PingSource) {
+		c.Status.MarkOIDCIdentityCreatedSucceeded()
+	}
+}
+
+func WithPingSourceOIDCIdentityCreatedSucceededBecauseOIDCFeatureDisabled() PingSourceOption {
+	return func(c *v1.PingSource) {
+		c.Status.MarkOIDCIdentityCreatedSucceededWithReason(fmt.Sprintf("%s feature disabled", feature.OIDCAuthentication), "")
+	}
+}
+
+func WithPingSourceOIDCIdentityCreatedFailed(reason, message string) PingSourceOption {
+	return func(c *v1.PingSource) {
+		c.Status.MarkOIDCIdentityCreatedFailed(reason, message)
+	}
+}
+
+func WithPingSourceOIDCServiceAccountName(name string) PingSourceOption {
+	return func(c *v1.PingSource) {
+		if c.Status.Auth == nil {
+			c.Status.Auth = &duckv1.AuthStatus{}
+		}
+
+		c.Status.Auth.ServiceAccountName = &name
+	}
 }

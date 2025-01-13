@@ -17,6 +17,13 @@ else
 	arch_alt = arm64
 endif
 
+### DEPS ##
+ifeq ($(PLATFORM),Darwin)
+	OPEN := open
+else
+	OPEN := xdg-open
+endif
+
 # https://stackoverflow.com/questions/4842424/list-of-ansi-color-escape-sequences
 RED := \033[0;31m
 GREEN := \033[0;32m
@@ -46,15 +53,6 @@ $(LOCAL_BIN):
 envrc::
 	@echo 'export PATH="$(PATH)"'
 
-
-
-### DEPS #
-#
-ifeq ($(PLATFORM),Darwin)
-	OPEN := open
-else
-	OPEN := xdg-open
-endif
 
 GCLOUD_SDK_VERSION := 437.0.1
 GCLOUD_BIN := gcloud-$(GCLOUD_SDK_VERSION)-$(PLATFORM)-x86_64
@@ -138,7 +136,7 @@ releases-envsubst:
 
 KUBECTL_RELEASES := https://github.com/kubernetes/kubernetes/tags
 # Keep this in sync with KIND_K8S_VERSION
-KUBECTL_VERSION := 1.25.9
+KUBECTL_VERSION := 1.27.3
 KUBECTL_BIN := kubectl-$(KUBECTL_VERSION)-$(platform)-$(arch_alt)
 KUBECTL_URL := https://storage.googleapis.com/kubernetes-release/release/v$(KUBECTL_VERSION)/bin/$(platform)/amd64/kubectl
 KUBECTL := $(LOCAL_BIN)/$(KUBECTL_BIN)
@@ -258,7 +256,7 @@ envrc:: bash-autocomplete
 
 .PHONY: go-dep-update
 go-dep-update: ## Update any Go dependency
-	@printf "Update dep in go.mod by running e.g. $(BOLD)go get -d github.com/rabbitmq/messaging-topology-operator@v1.2.1$(NORMAL)\n" \
+	@printf "Update dep in go.mod by running e.g. $(BOLD)go get -d github.com/rabbitmq/messaging-topology-operator@v1.12.0$(NORMAL)\n" \
 	; read -rp " (press any key when done)" -n 1
 	$(CURDIR)/hack/update-deps.sh
 	$(CURDIR)/hack/update-codegen.sh
@@ -289,11 +287,11 @@ KO_DOCKER_REPO := kind.local
 envrc::
 	@echo 'export KO_DOCKER_REPO="$(KO_DOCKER_REPO)"'
 export KO_DOCKER_REPO
-MIN_SUPPORTED_K8S_VERSION := 1.25.0
+MIN_SUPPORTED_K8S_VERSION := 1.27.3
 KIND_K8S_VERSION ?= $(MIN_SUPPORTED_K8S_VERSION)
 export KIND_K8S_VERSION
 # Find the corresponding version digest in https://github.com/kubernetes-sigs/kind/releases
-KIND_K8S_DIGEST ?= sha256:227fa11ce74ea76a0474eeefb84cb75d8dad1b08638371ecf0e86259b35be0c8
+KIND_K8S_DIGEST ?= sha256:6e2d8b28a5b601defe327b98bd1c2d1930b49e5d8c512e1895099e4504007adb
 export KIND_K8S_DIGEST
 
 .PHONY: kind-cluster
@@ -311,7 +309,7 @@ $(KUBECONFIG): | $(KUBECONFIG_DIR)
 kubeconfig: $(KUBECONFIG)
 
 # https://github.com/rabbitmq/cluster-operator/releases
-RABBITMQ_CLUSTER_OPERATOR_VERSION ?= 2.3.0
+RABBITMQ_CLUSTER_OPERATOR_VERSION ?= 2.5.0
 .PHONY: install-rabbitmq-cluster-operator
 install-rabbitmq-cluster-operator: | $(KUBECONFIG) $(KUBECTL) ## Install RabbitMQ Cluster Operator
 	$(KUBECTL) $(K_CMD) --filename \
@@ -334,25 +332,26 @@ install-rabbitmq-topology-operator: | install-cert-manager $(KUBECTL) ## Install
 	$(KUBECTL) $(K_CMD) --filename \
 		https://github.com/rabbitmq/messaging-topology-operator/releases/download/v$(RABBITMQ_TOPOLOGY_OPERATOR_VERSION)/messaging-topology-operator-with-certmanager.yaml
 
-KNATIVE_VERSION ?= 1.10.0
-EVENTING_CRDS ?= https://github.com/knative/eventing/releases/download/knative-v$(KNATIVE_VERSION)/eventing-crds.yaml
-EVENTING_CORE ?= https://github.com/knative/eventing/releases/download/knative-v$(KNATIVE_VERSION)/eventing-core.yaml
+KNATIVE_EVENTING_VERSION ?= 1.15.0
+EVENTING_CRDS ?= https://github.com/knative/eventing/releases/download/knative-v$(KNATIVE_EVENTING_VERSION)/eventing-crds.yaml
+EVENTING_CORE ?= https://github.com/knative/eventing/releases/download/knative-v$(KNATIVE_EVENTING_VERSION)/eventing-core.yaml
 
 ifneq (,$(USE_LATEST_EVENTING))
 EVENTING_CRDS = ./third_party/eventing-latest/eventing-crds.yaml
 EVENTING_CORE = ./third_party/eventing-latest/eventing-core.yaml
 endif
 
+KNATIVE_SERVING_VERSION ?= 1.15.0
 # https://github.com/knative/serving/releases
 .PHONY: install-knative-serving
 install-knative-serving: | $(KUBECONFIG) $(KUBECTL) ## Install Knative Serving
 	$(KUBECTL) $(K_CMD) --filename \
-		https://github.com/knative/serving/releases/download/knative-v$(KNATIVE_VERSION)/serving-crds.yaml
+		https://github.com/knative/serving/releases/download/knative-v$(KNATIVE_SERVING_VERSION)/serving-crds.yaml
 	$(KUBECTL) $(K_CMD) --filename \
-		https://github.com/knative/serving/releases/download/knative-v$(KNATIVE_VERSION)/serving-core.yaml
+		https://github.com/knative/serving/releases/download/knative-v$(KNATIVE_SERVING_VERSION)/serving-core.yaml
 	$(KUBECTL) wait --for=condition=available deploy/controller --timeout=60s --namespace $(SERVING_NAMESPACE)
 	$(KUBECTL) wait --for=condition=available deploy/webhook --timeout=60s --namespace $(SERVING_NAMESPACE)
-	$(KUBECTL) apply --filename https://github.com/knative/net-kourier/releases/download/knative-v$(KNATIVE_VERSION)/kourier.yaml
+	$(KUBECTL) apply --filename https://github.com/knative/net-kourier/releases/download/knative-v$(KNATIVE_SERVING_VERSION)/kourier.yaml
 	$(KUBECTL) patch configmap/config-network --namespace $(SERVING_NAMESPACE) --type merge \
 		--patch '{"data":{"ingress.class":"kourier.ingress.networking.knative.dev"}}'
 

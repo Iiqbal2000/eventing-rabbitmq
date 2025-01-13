@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -173,17 +173,9 @@ func AsDestinationRef(name string) *duckv1.Destination {
 // WithDeadLetterSink adds the dead letter sink related config to a Subscription spec.
 var WithDeadLetterSink = delivery.WithDeadLetterSink
 
+var WithAnnotations = manifest.WithAnnotations
+
 // ValidateAddress validates the address retured by Address
-func ValidateAddress(name string, validate addressable.ValidateAddress, timings ...time.Duration) feature.StepFn {
-	return func(ctx context.Context, t feature.T) {
-		addr, err := Address(ctx, name, timings...)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		if err := validate(addr); err != nil {
-			t.Error(err)
-			return
-		}
-	}
+func ValidateAddress(name string, validate addressable.ValidateAddressFn, timings ...time.Duration) feature.StepFn {
+	return addressable.ValidateAddress(GVR(), name, validate, timings...)
 }

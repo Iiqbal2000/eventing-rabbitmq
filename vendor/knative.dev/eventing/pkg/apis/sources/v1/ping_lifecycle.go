@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -35,11 +35,15 @@ const (
 
 	// PingSourceConditionDeployed has status True when the PingSource has had it's receive adapter deployment created.
 	PingSourceConditionDeployed apis.ConditionType = "Deployed"
+
+	// PingSourceConditionOIDCIdentityCreated has status True when the PingSource has had it's OIDC identity created.
+	PingSourceConditionOIDCIdentityCreated apis.ConditionType = "OIDCIdentityCreated"
 )
 
 var PingSourceCondSet = apis.NewLivingConditionSet(
 	PingSourceConditionSinkProvided,
-	PingSourceConditionDeployed)
+	PingSourceConditionDeployed,
+	PingSourceConditionOIDCIdentityCreated)
 
 const (
 	// PingSourceEventType is the default PingSource CloudEvent type.
@@ -91,6 +95,7 @@ func (s *PingSourceStatus) MarkSink(uri *duckv1.Addressable) {
 	if uri != nil {
 		s.SinkURI = uri.URL
 		s.SinkCACerts = uri.CACerts
+		s.SinkAudience = uri.Audience
 		PingSourceCondSet.Manage(s).MarkTrue(PingSourceConditionSinkProvided)
 	} else {
 		PingSourceCondSet.Manage(s).MarkFalse(PingSourceConditionSinkProvided, "SinkEmpty", "Sink has resolved to empty.")
@@ -121,4 +126,20 @@ func (s *PingSourceStatus) PropagateDeploymentAvailability(d *appsv1.Deployment)
 	if !deploymentAvailableFound {
 		PingSourceCondSet.Manage(s).MarkUnknown(PingSourceConditionDeployed, "DeploymentUnavailable", "The Deployment '%s' is unavailable.", d.Name)
 	}
+}
+
+func (s *PingSourceStatus) MarkOIDCIdentityCreatedSucceeded() {
+	PingSourceCondSet.Manage(s).MarkTrue(PingSourceConditionOIDCIdentityCreated)
+}
+
+func (s *PingSourceStatus) MarkOIDCIdentityCreatedSucceededWithReason(reason, messageFormat string, messageA ...interface{}) {
+	PingSourceCondSet.Manage(s).MarkTrueWithReason(PingSourceConditionOIDCIdentityCreated, reason, messageFormat, messageA...)
+}
+
+func (s *PingSourceStatus) MarkOIDCIdentityCreatedFailed(reason, messageFormat string, messageA ...interface{}) {
+	PingSourceCondSet.Manage(s).MarkFalse(PingSourceConditionOIDCIdentityCreated, reason, messageFormat, messageA...)
+}
+
+func (s *PingSourceStatus) MarkOIDCIdentityCreatedUnknown(reason, messageFormat string, messageA ...interface{}) {
+	PingSourceCondSet.Manage(s).MarkUnknown(PingSourceConditionOIDCIdentityCreated, reason, messageFormat, messageA...)
 }
