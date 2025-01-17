@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,6 +19,7 @@ package testing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -29,6 +30,7 @@ import (
 
 	eventingduckv1 "knative.dev/eventing/pkg/apis/duck/v1"
 	eventingv1 "knative.dev/eventing/pkg/apis/eventing/v1"
+	"knative.dev/eventing/pkg/apis/feature"
 	v1 "knative.dev/eventing/pkg/apis/messaging/v1"
 )
 
@@ -125,6 +127,17 @@ func WithSubscriptionChannel(gvk metav1.GroupVersionKind, name string) Subscript
 	}
 }
 
+func WithSubscriptionChannelRef(gvk metav1.GroupVersionKind, name string, namespace string) SubscriptionOption {
+	return func(s *v1.Subscription) {
+		s.Spec.Channel = duckv1.KReference{
+			APIVersion: apiVersion(gvk),
+			Kind:       gvk.Kind,
+			Name:       name,
+			Namespace:  namespace,
+		}
+	}
+}
+
 func WithSubscriptionChannelUsingGroup(gvk metav1.GroupVersionKind, name string) SubscriptionOption {
 	return func(s *v1.Subscription) {
 		s.Spec.Channel = duckv1.KReference{
@@ -142,6 +155,29 @@ func WithSubscriptionChannelUsingApiVersionAndGroup(gvk metav1.GroupVersionKind,
 			Group:      gvk.Group,
 			Kind:       gvk.Kind,
 			Name:       name,
+		}
+	}
+}
+
+func WithSubscriptionChannelRefUsingGroup(gvk metav1.GroupVersionKind, name string, namespace string) SubscriptionOption {
+	return func(s *v1.Subscription) {
+		s.Spec.Channel = duckv1.KReference{
+			Group:     gvk.Group,
+			Kind:      gvk.Kind,
+			Name:      name,
+			Namespace: namespace,
+		}
+	}
+}
+
+func WithSubscriptionChannelRefUsingApiVersionAndGroup(gvk metav1.GroupVersionKind, name string, namespace string) SubscriptionOption {
+	return func(s *v1.Subscription) {
+		s.Spec.Channel = duckv1.KReference{
+			APIVersion: apiVersion(gvk),
+			Group:      gvk.Group,
+			Kind:       gvk.Kind,
+			Name:       name,
+			Namespace:  namespace,
 		}
 	}
 }
@@ -280,5 +316,33 @@ func WithSubscriptionReply(gvk metav1.GroupVersionKind, name, namespace string) 
 				Namespace:  namespace,
 			},
 		}
+	}
+}
+
+func WithSubscriptionOIDCIdentityCreatedSucceeded() SubscriptionOption {
+	return func(s *v1.Subscription) {
+		s.Status.MarkOIDCIdentityCreatedSucceeded()
+	}
+}
+
+func WithSubscriptionOIDCIdentityCreatedSucceededBecauseOIDCFeatureDisabled() SubscriptionOption {
+	return func(s *v1.Subscription) {
+		s.Status.MarkOIDCIdentityCreatedSucceededWithReason(fmt.Sprintf("%s feature disabled", feature.OIDCAuthentication), "")
+	}
+}
+
+func WithSubscriptionOIDCIdentityCreatedFailed(reason, message string) SubscriptionOption {
+	return func(s *v1.Subscription) {
+		s.Status.MarkOIDCIdentityCreatedFailed(reason, message)
+	}
+}
+
+func WithSubscriptionOIDCServiceAccountName(name string) SubscriptionOption {
+	return func(s *v1.Subscription) {
+		if s.Status.Auth == nil {
+			s.Status.Auth = &duckv1.AuthStatus{}
+		}
+
+		s.Status.Auth.ServiceAccountName = &name
 	}
 }

@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -114,7 +114,7 @@ func ControlPlaneTrigger_GivenBroker(brokerName string) *feature.Feature {
 		service.WithSelectors(map[string]string{"bad": "svc"})))
 
 	triggerName := feature.MakeRandomK8sName("trigger")
-	f.Setup("Create a Trigger", triggerresources.Install(triggerName, brokerName,
+	f.Setup("Create a Trigger", triggerresources.Install(triggerName, triggerresources.WithBrokerName(brokerName),
 		triggerresources.WithSubscriber(service.AsKReference(subscriberName), ""),
 	))
 
@@ -142,7 +142,7 @@ func ControlPlaneTrigger_GivenBrokerTriggerReady(brokerName string) *feature.Fea
 		service.WithSelectors(map[string]string{"bad": "svc"})))
 
 	triggerName := feature.MakeRandomK8sName("trigger")
-	f.Setup("Create a Trigger", triggerresources.Install(triggerName, brokerName,
+	f.Setup("Create a Trigger", triggerresources.Install(triggerName, triggerresources.WithBrokerName(brokerName),
 		triggerresources.WithSubscriber(service.AsKReference(subscriberName), ""),
 	))
 
@@ -167,7 +167,7 @@ func ControlPlaneTrigger_WithBrokerLifecycle(brokerOpts ...manifest.CfgFn) *feat
 	brokerName := feature.MakeRandomK8sName("broker")
 
 	triggerName := feature.MakeRandomK8sName("trigger")
-	f.Setup("Create a Trigger", triggerresources.Install(triggerName, brokerName,
+	f.Setup("Create a Trigger", triggerresources.Install(triggerName, triggerresources.WithBrokerName(brokerName),
 		triggerresources.WithSubscriber(service.AsKReference(subscriberName), ""),
 	))
 
@@ -211,7 +211,7 @@ func ControlPlaneTrigger_WithValidFilters(brokerName string) *feature.Feature {
 	}
 
 	triggerName := feature.MakeRandomK8sName("trigger")
-	f.Setup("Create a Trigger", triggerresources.Install(triggerName, brokerName,
+	f.Setup("Create a Trigger", triggerresources.Install(triggerName, triggerresources.WithBrokerName(brokerName),
 		triggerresources.WithSubscriber(service.AsKReference(subscriberName), ""),
 		triggerresources.WithFilter(filters),
 	))
@@ -261,7 +261,7 @@ func ControlPlaneTrigger_WithInvalidFilters(brokerName string) *feature.Feature 
 	}
 
 	triggerName := feature.MakeRandomK8sName("trigger")
-	f.Setup("Create a Trigger", triggerresources.Install(triggerName, brokerName,
+	f.Setup("Create a Trigger", triggerresources.Install(triggerName, triggerresources.WithBrokerName(brokerName),
 		triggerresources.WithSubscriber(service.AsKReference(subscriberName), ""),
 	))
 
@@ -384,7 +384,7 @@ func addControlPlaneDelivery(fs *feature.FeatureSet, brokerOpts ...manifest.CfgF
 
 		f.Requirement("wait until done", func(ctx context.Context, t feature.T) {
 			interval, timeout := environment.PollTimingsFromContext(ctx)
-			err := wait.PollImmediate(interval, timeout, func() (bool, error) {
+			err := wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(ctx context.Context) (bool, error) {
 				gtg := true
 				for prefix, want := range expectedEvents {
 					events := prober.ReceivedOrRejectedBy(ctx, prefix)
@@ -530,7 +530,7 @@ func addControlPlaneEventRouting(fs *feature.FeatureSet, brokerOpts ...manifest.
 
 		f.Requirement("wait until done", func(ctx context.Context, t feature.T) {
 			interval, timeout := environment.PollTimingsFromContext(ctx)
-			err := wait.PollImmediate(interval, timeout, func() (bool, error) {
+			err := wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(ctx context.Context) (bool, error) {
 				gtg := true
 				for prefix, want := range expectedEvents {
 					events := prober.ReceivedOrRejectedBy(ctx, prefix)

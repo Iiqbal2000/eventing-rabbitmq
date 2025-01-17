@@ -20,12 +20,19 @@ metadata:
   {{ if .annotations }}
   annotations:
   {{ range $key, $value := .annotations }}
-    {{ $key }}: {{ $value }}
+    {{ $key }}: '{{ $value }}'
   {{ end }}
   {{ end }}
 spec:
   {{ if .brokerName }}
   broker: {{ .brokerName }}
+  {{ end }}
+  {{ if .brokerRef }}
+  brokerRef:
+    kind: {{ .brokerRef.kind }}
+    namespace: {{ .brokerRef.namespace }}
+    name: {{ .brokerRef.name }}
+    apiVersion: {{ .brokerRef.apiVersion }}
   {{ end }}
   {{ if .filter }}
   filter:
@@ -54,6 +61,9 @@ spec:
     CACerts: |-
       {{ .subscriber.CACerts }}
     {{ end }}
+    {{ if .subscriber.audience }}
+    audience: {{ .subscriber.audience }}
+    {{ end }}
   {{ end }}
   {{ if .delivery }}
   delivery:
@@ -72,6 +82,10 @@ spec:
       {{ if .delivery.deadLetterSink.uri }}
       uri: {{ .delivery.deadLetterSink.uri }}
       {{ end }}
+      {{ if .delivery.deadLetterSink.CACerts }}
+      CACerts: |-
+        {{ .delivery.deadLetterSink.CACerts }}
+      {{ end }}
     {{ end }}
     {{ if .delivery.retry }}
     retry: {{ .delivery.retry}}
@@ -81,5 +95,8 @@ spec:
     {{ end }}
     {{ if .delivery.backoffDelay }}
     backoffDelay: "{{ .delivery.backoffDelay}}"
+    {{ end }}
+    {{ if .delivery.format }}
+    format: {{ .delivery.format }}
     {{ end }}
   {{ end }}

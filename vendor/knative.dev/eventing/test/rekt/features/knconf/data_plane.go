@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -54,7 +54,7 @@ func AcceptsCEVersions(ctx context.Context, t feature.T, gvr schema.GroupVersion
 		// We are looking for two events, one of them is the sent event and the other
 		// is Response, so correlate them first. We want to make sure the event was sent and that the
 		// response was what was expected.
-		events := Correlate(store.AssertAtLeast(t, 2, SentEventMatcher(id)))
+		events := Correlate(store.AssertAtLeast(ctx, t, 2, SentEventMatcher(id)))
 		for _, e := range events {
 			// Make sure HTTP response code is 2XX
 			if e.Response.StatusCode < 200 || e.Response.StatusCode > 299 {

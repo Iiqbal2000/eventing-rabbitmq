@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -49,6 +49,10 @@ var EnvCfg EnvConfig
 type EnvConfig struct {
 	BrokerClass        string `envconfig:"BROKER_CLASS" default:"MTChannelBasedBroker" required:"true"`
 	BrokerTemplatesDir string `envconfig:"BROKER_TEMPLATES"`
+}
+
+func (cfg EnvConfig) IsMTChannelBasedBroker() bool {
+	return cfg.BrokerClass == "" || cfg.BrokerClass == "MTChannelBasedBroker"
 }
 
 func init() {
@@ -101,6 +105,12 @@ func WithConfig(name string) manifest.CfgFn {
 		cfg["apiVersion"] = "v1"
 		cfg["name"] = name
 		templateData["config"] = cfg
+	}
+}
+
+func WithNamespace(namespace string) manifest.CfgFn {
+	return func(cfg map[string]interface{}) {
+		cfg["namespace"] = namespace
 	}
 }
 
@@ -160,18 +170,8 @@ func IsAddressable(name string, timings ...time.Duration) feature.StepFn {
 }
 
 // ValidateAddress validates the address retured by Address
-func ValidateAddress(name string, validate addressable.ValidateAddress, timings ...time.Duration) feature.StepFn {
-	return func(ctx context.Context, t feature.T) {
-		addr, err := Address(ctx, name, timings...)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		if err := validate(addr); err != nil {
-			t.Error(err)
-			return
-		}
-	}
+func ValidateAddress(name string, validate addressable.ValidateAddressFn, timings ...time.Duration) feature.StepFn {
+	return addressable.ValidateAddress(GVR(), name, validate, timings...)
 }
 
 // Address returns a broker's address.
@@ -205,7 +205,7 @@ func WaitForCondition(name string, condition Condition, timing ...time.Duration)
 		interval, timeout := k8s.PollTimings(ctx, timing)
 		var lastErr error
 		var lastBroker *eventingv1.Broker
-		err := wait.PollImmediate(interval, timeout, func() (done bool, err error) {
+		err := wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(ctx context.Context) (done bool, err error) {
 			br, err := eventingclient.Get(ctx).
 				EventingV1().
 				Brokers(env.Namespace()).
@@ -286,4 +286,8 @@ func InstallMTBroker(name string) *feature.Feature {
 	f.Setup(fmt.Sprintf("Install broker %q", name), Install(name, WithEnvConfig()...))
 	f.Requirement("Broker is ready", IsReady(name))
 	return f
+}
+
+func InstallMTBrokerStepFn(brokerName string) feature.StepFn {
+	return Install(brokerName, WithEnvConfig()...)
 }
